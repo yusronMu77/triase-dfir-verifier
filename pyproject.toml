@@ -1,0 +1,6 @@
+[project]
+name = "astria-verifier"
+version = "0.0.0"
+description = "Memeriksa klaim narasi terhadap bukti sebelum kartu terbit."
+requires-python = ">=3.14"
+dependencies = []
