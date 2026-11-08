@@ -1,0 +1,73 @@
+# Dikelola template astria-common (template/service). Ubah di template, lalu render ulang.
+# Action dan alat dipin dengan SHA atau checksum (pelajaran insiden Trivy); tidak ada tag mutabel.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.13.7"
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - name: Akses dependensi privat (astria-common, astria-contracts)
+        env:
+          DEPS_TOKEN: ${{ secrets.DEPS_TOKEN || secrets.BOARD_TOKEN }}
+        run: git config --global url."https://x-access-token:${DEPS_TOKEN}@github.com/yusronMu77/".insteadOf "https://github.com/yusronMu77/"
+      - run: uv sync --locked
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run pytest -q
+      - name: gitleaks
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o /tmp/gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks git --redact --no-banner .
+
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: check
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build image
+        env:
+          GH_TOKEN: ${{ secrets.DEPS_TOKEN || secrets.BOARD_TOKEN }}
+          DOCKER_BUILDKIT: "1"
+        run: docker build --secret id=gh_token,env=GH_TOKEN -t astria-verifier:ci .
+      - name: Smoke /ready
+        run: |
+          docker run -d --name svc -e ASTRIA_ENV=test -p 8000:8000 astria-verifier:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/ready; then exit 0; fi
+            sleep 1
+          done
+          docker logs svc
+          exit 1

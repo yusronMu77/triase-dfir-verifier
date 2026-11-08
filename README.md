@@ -10,7 +10,7 @@
 
 Memeriksa klaim narasi terhadap bukti sebelum kartu terbit.
 
-> Status: kerangka awal, belum ada kode. Repo ini adalah submodule dari workspace `triase-dfir` (folder `verifier/`). Rancangan: `notes/2026-11-06-triase-dfir-app-verifier.md` di repo root. Lajur developer: 2.
+> Status: Tahap 0, kerangka layanan dari templat `common` v0.1.0 (`/health`, `/ready`, `/metrics`, token layanan, Dockerfile, CI). Repo ini adalah submodule dari workspace `triase-dfir` (folder `verifier/`). Rancangan: `notes/2026-11-06-triase-dfir-app-verifier.md` di repo root. Lajur developer: 2.
 
 ## Tech stack
 
@@ -19,9 +19,13 @@ Python 3.14, FastAPI, NATS JetStream, uv
 ## Perintah
 
 ```text
-uv sync
+uv sync                                   # butuh akses ke repo privat contracts dan common (tag git)
+uv run ruff format --check . && uv run ruff check .
 uv run pytest
+sh ../common/template/localtest.sh        # di kontainer py devenv: uji terhadap salinan kerja common dan contracts
 ```
+
+Menjalankan bersama layanan lain: `pwsh ../devenv/scripts/dev.ps1 up`, lalu `dev.ps1 smoke`.
 
 ## Alur git
 
