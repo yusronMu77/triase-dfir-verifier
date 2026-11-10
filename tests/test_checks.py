@@ -5,9 +5,8 @@ from astria_verifier import checks as c
 from astria_verifier.checks import Bukti, entitas, nilai_sama, normalisasi, periksa
 
 
-def _gagal(teks: str, bukti=None, nilai=None, *, asli="ada") -> tuple[str, ...]:
-    sumber = bukti_asli() if asli == "ada" else None
-    return periksa(kode(), narasi([klaim(teks, bukti, nilai)]), sumber)[0].kode_gagal
+def _gagal(teks: str, bukti=None, nilai=None, *, k=None) -> tuple[str, ...]:
+    return periksa(k or kode(), narasi([klaim(teks, bukti, nilai)]), bukti_asli())[0].kode_gagal
 
 
 def test_normalisasi_is_idempotent_and_strips_invisible() -> None:
@@ -41,10 +40,10 @@ def test_entitas_recognizes_identifiers_but_not_plain_words() -> None:
     assert entitas("Triage menilai insiden ini masing-masing KRITIS skor 71 pada 2026-11-10 pola P-AKUN-X") == set()
 
 
-def test_clean_claims_pass_with_and_without_original_evidence() -> None:
+def test_clean_claims_pass() -> None:
     teks = "Akun svc-backup gagal logon dari 10.20.8.31 ke WS-ADM-04."
     assert _gagal(teks, nilai={"SrcIP": "10.20.8.31"}) == ()
-    assert _gagal("Akun svc-backup gagal logon ke WS-ADM-04.", asli="tidak") == ()
+    assert _gagal("Akun svc-backup gagal logon ke WS-ADM-04.") == ()
 
 
 @pytest.mark.parametrize(
@@ -60,6 +59,7 @@ def test_clean_claims_pass_with_and_without_original_evidence() -> None:
         ("Skor 45/100 untuk svc-backup.", None, None, c.BERTENTANGAN_DENGAN_KODE),
         ("Cocok dengan pola P-BRUTE-TANPA-AKSES.", None, None, c.BERTENTANGAN_DENGAN_KODE),
         ("Teknik T1059.001 terlihat.", None, None, c.BERTENTANGAN_DENGAN_KODE),
+        ("Aturan K-PROSES-ANEH terpicu.", None, None, c.BERTENTANGAN_DENGAN_KODE),
         ("Jalankan langkah S-ISOLASI-HOST segera.", None, None, c.KODE_LANGKAH_ASING),
         ("Akun svc-backup adalah sumber serangan.", None, None, c.PERAN_BERTENTANGAN),
     ],
@@ -68,8 +68,12 @@ def test_each_check_has_its_failure_code(teks: str, bukti, nilai, kode_gagal: st
     assert kode_gagal in _gagal(teks, bukti, nilai)
 
 
-def test_quoted_value_without_original_evidence_is_not_trusted() -> None:
-    assert _gagal("Logon dari 10.20.8.31.", nilai={"SrcIP": "10.20.8.31"}, asli="tidak") == (c.BUKTI_TIDAK_TERSEDIA,)
+def test_technique_and_finding_must_be_listed_in_kode_fields() -> None:
+    teks = "Teknik T1110.001 dan temuan K-LOGON-SUKSES-SETELAH-GAGAL pada svc-backup."
+    assert _gagal(teks) == ()
+    # Tanpa field (triage lama), teknik dan temuan tidak dianggap berdasar walau teksnya cocok.
+    tanpa = kode().model_copy(update={"teknik_attack": None, "temuan_korelasi": None})
+    assert _gagal(teks, k=tanpa) == (c.BERTENTANGAN_DENGAN_KODE,)
 
 
 def test_changed_or_missing_evidence_is_flagged() -> None:
@@ -98,4 +102,4 @@ def test_matching_role_passes_and_counter_hypotheses_are_checked_without_evidenc
         ("belum_diketahui", ()),
     ]
     n = narasi(hipotesis_tandingan=[{"teks": "Teknik T1059.001 dipakai.", "pembantah": ""}])
-    assert periksa(kode(), n, None)[2].kode_gagal == (c.BERTENTANGAN_DENGAN_KODE,)
+    assert periksa(kode(), n, bukti_asli())[2].kode_gagal == (c.BERTENTANGAN_DENGAN_KODE,)

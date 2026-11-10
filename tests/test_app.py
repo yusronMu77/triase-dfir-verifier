@@ -17,20 +17,17 @@ def test_health_and_ready_without_dependencies() -> None:
 
 
 DEV_DB = SecretStr("postgresql+psycopg://u:p@postgres:5432/verifier_dev")
+DEV = Settings(env="dev", database_url=DEV_DB, nats_url="nats://nats:4222", service_key=SecretStr("ab" * 32))
 
 
 def test_both_consumers_are_wired_when_db_and_nats_configured() -> None:
-    app = build_app(Settings(env="dev", database_url=DEV_DB, nats_url="nats://nats:4222"))
+    app = build_app(DEV)
     assert {"consumer:verifier-paket", "consumer:verifier-draf"} <= set(app.state.components)
 
 
-def test_ingest_url_requires_service_key() -> None:
-    settings = Settings(
-        env="dev", database_url=DEV_DB, nats_url="nats://n:4222", verifier_ingest_url="http://ingest:8000"
-    )
+def test_original_evidence_is_mandatory_so_service_key_is_required() -> None:
     with pytest.raises(RuntimeError):
-        build_app(settings)
-    build_app(settings.model_copy(update={"service_key": SecretStr("ab" * 32)}))
+        build_app(DEV.model_copy(update={"service_key": None}))
 
 
 def test_refuses_to_start_with_non_dev_database_in_dev() -> None:

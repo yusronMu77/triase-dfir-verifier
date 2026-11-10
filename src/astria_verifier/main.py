@@ -15,9 +15,7 @@ from astria_verifier.pipeline import Verifier, metadata
 from astria_verifier.settings import Settings
 
 
-def _evidence(settings: Settings) -> IngestEvidence | None:
-    if settings.verifier_ingest_url is None:
-        return None
+def _evidence(settings: Settings) -> IngestEvidence:
     key = settings.service_key_bytes()
     if key is None:
         raise RuntimeError("verifier: ASTRIA_SERVICE_KEY atau _FILE wajib untuk membaca bukti dari ingest")
