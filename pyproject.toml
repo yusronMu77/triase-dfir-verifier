@@ -18,8 +18,8 @@ dev = [
 
 # Dependensi privat lewat tag git (keputusan pemilik infra#3). Naikkan tag di sini, lalu `uv lock`.
 [tool.uv.sources]
-astria-common = { git = "https://github.com/yusronMu77/triase-dfir-common", tag = "v0.1.0" }
-astria-contracts = { git = "https://github.com/yusronMu77/triase-dfir-contracts", tag = "v0.1.0" }
+astria-common = { git = "https://github.com/yusronMu77/triase-dfir-common", tag = "v0.2.1" }
+astria-contracts = { git = "https://github.com/yusronMu77/triase-dfir-contracts", tag = "v0.2.0" }
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]
