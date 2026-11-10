@@ -1,21 +1,27 @@
 """Bukti asli dari ingest: `POST /svc/v1/evidence:batch` (note app-ingest 3.2), berkunci token layanan.
 
-ID yang tidak dikembalikan ingest (`not_found`) tidak ada di hasil; pemeriksaan menandai klaimnya
-`ID_TIDAK_DITEMUKAN`. Kegagalan jaringan dilempar agar konsumen mencoba ulang lalu ke DLQ.
+Bukti asli wajib (note app-verifier 5.1 dan 9). ID yang tidak dikembalikan ingest (`not_found`) dicoba sekali
+lagi setelah jeda (`VER_BUKTI_TIDAK_TERSEDIA`); bila tetap hilang, klaim yang merujuknya gagal
+`ID_TIDAK_DITEMUKAN`. Ingest yang tidak terjangkau melempar galat, sehingga event tidak di-ack dan dikirim ulang.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Protocol
 
 from astria_common.auth import ServiceTokenClient
 from astria_common.http import make_client
+from astria_common.log import get_logger
 
 from astria_verifier.checks import Bukti
 
+log = get_logger(__name__)
+
 BATCH_PATH = "/svc/v1/evidence:batch"
+JEDA_ULANG = 2.0
 _EVENT_DARI_KIND = re.compile(r"\.(\d{3,5})$")
 
 
@@ -32,6 +38,19 @@ def parse_items(payload: Mapping[str, Any]) -> dict[str, Bukti]:
             teks=tuple(teks),
         )
     return hasil
+
+
+class EvidenceSource(Protocol):
+    async def fetch(self, ids: Sequence[str]) -> dict[str, Bukti]: ...
+
+
+async def ambil_bukti(sumber: EvidenceSource, ids: Sequence[str], *, jeda: float) -> dict[str, Bukti]:
+    bukti = await sumber.fetch(ids)
+    if hilang := sorted(set(ids) - bukti.keys()):
+        log.warning("VER_BUKTI_TIDAK_TERSEDIA", hilang=hilang)
+        await asyncio.sleep(jeda)
+        bukti |= await sumber.fetch(hilang)
+    return bukti
 
 
 class IngestEvidence:

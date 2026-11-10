@@ -30,7 +30,7 @@ class FakeEvidence:
 
     async def fetch(self, ids):
         self.calls.append(list(ids))
-        return bukti_asli()
+        return {i: b for i, b in bukti_asli().items() if i in ids}
 
 
 @pytest.fixture
@@ -45,8 +45,14 @@ async def db():
     await database.stop()
 
 
-def _event(event_type: str):
-    return decode(encode(new_event(event_type, example(event_type)["data"], correlation=KARTU)))
+def _event(event_type: str, **data):
+    return decode(encode(new_event(event_type, example(event_type)["data"] | data, correlation=KARTU)))
+
+
+def _draf(attempt: int, klaim: str):
+    narasi = example("narration.completed")["data"]["narasi"]
+    narasi["ringkasan"][0] = {"klaim": klaim, "bukti": ["EV-hb01-004217"]}
+    return _event("narration.completed", attempt=attempt, narasi=narasi)
 
 
 async def _run(db: Database, handler, event) -> None:
@@ -67,7 +73,7 @@ async def _outbox(db: Database) -> list:
 @pytest.mark.parametrize("order", ["paket_dulu", "draf_dulu"])
 async def test_pair_in_any_order_publishes_card_verified_and_audit(db: Database, order: str) -> None:
     evidence = FakeEvidence()
-    v = Verifier(evidence, ambang=AMBANG_SEBAGIAN)
+    v = Verifier(evidence, ambang=AMBANG_SEBAGIAN, jeda_bukti=0)
     steps = [(v.on_paket, _event("card.skeleton.created")), (v.on_draf, _event("narration.completed"))]
     for handler, event in steps if order == "paket_dulu" else reversed(steps):
         await _run(db, handler, event)
@@ -83,12 +89,12 @@ async def test_pair_in_any_order_publishes_card_verified_and_audit(db: Database,
         assert await _count(conn, paket_tunggu) == 0
         assert await _count(conn, draf_tunggu) == 0
         row = (await conn.execute(select(verifikasi))).one()
-        assert row.status == verified.status and row.bukti_asli_dibaca is True
+        assert (row.status, row.percobaan) == (verified.status, 1)
         assert await _count(conn, klaim_hasil) == 5
 
 
 async def test_redelivered_draft_after_verification_does_not_publish_again(db: Database) -> None:
-    v = Verifier(None, ambang=AMBANG_SEBAGIAN)
+    v = Verifier(FakeEvidence(), ambang=AMBANG_SEBAGIAN, jeda_bukti=0)
     await _run(db, v.on_paket, _event("card.skeleton.created"))
     await _run(db, v.on_draf, _event("narration.completed"))
     await _run(db, v.on_draf, _event("narration.completed"))  # id event baru, kartu sama
@@ -96,4 +102,29 @@ async def test_redelivered_draft_after_verification_does_not_publish_again(db: D
     assert [e.type for e, _ in await _outbox(db)] == ["card.verified", "audit.record"]
     async with db.engine.connect() as conn:
         assert await _count(conn, draf_tunggu) == 0
-        assert (await conn.execute(select(verifikasi.c.bukti_asli_dibaca))).scalar() is False
+
+
+async def test_failed_attempt_1_requests_retry_and_attempt_2_decides(db: Database) -> None:
+    v = Verifier(FakeEvidence(), ambang=AMBANG_SEBAGIAN, jeda_bukti=0)
+    await _run(db, v.on_paket, _event("card.skeleton.created"))
+    await _run(db, v.on_draf, _draf(1, "Insiden svc-backup ini RENDAH."))
+    await _run(db, v.on_draf, _draf(1, "Insiden svc-backup ini RENDAH."))  # dikirim ulang: tidak minta lagi
+
+    published = await _outbox(db)
+    assert [e.type for e, _ in published] == ["narration.retry_requested"]
+    retry = published[0][1]
+    assert retry.attempt == 2
+    assert [(k.klaim_no, k.kode) for k in retry.kegagalan] == [(0, "BERTENTANGAN_DENGAN_KODE")]
+    async with db.engine.connect() as conn:
+        assert await _count(conn, verifikasi) == 0
+        assert (await conn.execute(select(paket_tunggu.c.diminta_ulang_pada))).scalar() is not None
+
+    await _run(db, v.on_draf, _draf(2, "Akun svc-backup gagal logon ke WS-ADM-04."))
+    published = await _outbox(db)
+    assert [e.type for e, _ in published] == ["narration.retry_requested", "card.verified", "audit.record"]
+    verified = published[1][1]
+    assert (verified.status, verified.percobaan) == ("LULUS", 2)
+    async with db.engine.connect() as conn:
+        attempts = (await conn.execute(select(klaim_hasil.c.attempt).distinct())).scalars().all()
+        assert sorted(attempts) == [1, 2]
+        assert await _count(conn, paket_tunggu) == 0

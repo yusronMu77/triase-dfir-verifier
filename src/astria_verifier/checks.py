@@ -25,7 +25,6 @@ BERTENTANGAN_DENGAN_KODE = "BERTENTANGAN_DENGAN_KODE"
 KODE_LANGKAH_ASING = "KODE_LANGKAH_ASING"
 PERAN_BERTENTANGAN = "PERAN_BERTENTANGAN"
 BUKTI_BERUBAH = "BUKTI_BERUBAH"
-BUKTI_TIDAK_TERSEDIA = "BUKTI_TIDAK_TERSEDIA"
 
 SINONIM_PERAN: dict[str, tuple[str, ...]] = {
     "DIDUGA_TERBOBOL": ("diduga terbobol", "terbobol", "diambil alih"),
@@ -191,22 +190,26 @@ class _Kartu:
     """Turunan kode dan bukti yang dihitung sekali per kartu, bukan per klaim."""
 
     kode: Kode
+    bukti: Mapping[str, Bukti]
     sha: Mapping[str, str]
     korpus_kode: frozenset[str]
     korpus_bukti: Mapping[str, frozenset[str]]
-    kode_teks: str
+    teknik: frozenset[str]
+    temuan: frozenset[str]
     entitas_peran: tuple[tuple[re.Pattern[str], str], ...]
     sinonim_peran: tuple[tuple[str, re.Pattern[str]], ...]
 
     @classmethod
-    def dari(cls, kode: Kode, bukti: Mapping[str, Bukti] | None) -> _Kartu:
+    def dari(cls, kode: Kode, bukti: Mapping[str, Bukti]) -> _Kartu:
         semua_peran = sorted(set(SINONIM_PERAN) | {e.peran for e in kode.entitas})
         return cls(
             kode=kode,
+            bukti=bukti,
             sha={b.id.root: b.sha256 for b in kode.bukti},
             korpus_kode=_korpus([kode.judul, *(e.nilai for e in kode.entitas), *(f.alasan for f in kode.faktor)]),
-            korpus_bukti={i: _korpus([*b.fields.values(), *b.teks]) for i, b in (bukti or {}).items()},
-            kode_teks=kode.model_dump_json(),
+            korpus_bukti={i: _korpus([*b.fields.values(), *b.teks]) for i, b in bukti.items()},
+            teknik=frozenset(t.id for t in kode.teknik_attack or ()),
+            temuan=frozenset(t.root for t in kode.temuan_korelasi or ()),
             entitas_peran=tuple(
                 (re.compile(rf"(?<![\w.-]){re.escape(normalisasi(e.nilai))}(?![\w-])"), e.peran) for e in kode.entitas
             ),
@@ -242,30 +245,30 @@ def _bertentangan_dengan_kode(kartu: _Kartu, teks: str) -> bool:
         return True
     if any(p != kode.pola for p in POLA.findall(teks)):
         return True
-    return any(t not in kartu.kode_teks for t in (*TEMUAN.findall(teks), *TEKNIK.findall(teks)))
+    if any(t not in kartu.teknik for t in TEKNIK.findall(teks)):
+        return True
+    return any(k not in kartu.temuan for k in TEMUAN.findall(teks))
 
 
-def _periksa_klaim(kartu: _Kartu, klaim: Klaim, bukti: Mapping[str, Bukti] | None) -> HasilKlaim:
+def _periksa_klaim(kartu: _Kartu, klaim: Klaim) -> HasilKlaim:
     gagal: list[str] = []
+    bukti = kartu.bukti
 
     # 2 dan 3: klaim faktual wajib menunjuk bukti, dan setiap ID (juga yang disebut di teks) milik kartu ini.
     if klaim.jenis in ("ringkasan", "hipotesis_utama") and not klaim.bukti:
         gagal.append(TANPA_BUKTI)
     dirujuk = (*klaim.bukti, *EV_ID.findall(klaim.teks))
-    if any(i not in kartu.sha or (bukti is not None and i not in bukti) for i in dirujuk):
+    if any(i not in kartu.sha or i not in bukti for i in dirujuk):
         gagal.append(ID_TIDAK_DITEMUKAN)
-    sumber = {i: bukti[i] for i in klaim.bukti if i in bukti} if bukti is not None else {}
+    sumber = {i: bukti[i] for i in klaim.bukti if i in bukti}
     if any(b.sha256 != kartu.sha.get(i) for i, b in sumber.items()):
         gagal.append(BUKTI_BERUBAH)
 
     # 4: setiap nilai yang dikutip ada di field bukti yang dirujuk.
-    if klaim.nilai:
-        if bukti is None:
-            gagal.append(BUKTI_TIDAK_TERSEDIA)
-        elif not all(
-            any(k in b.fields and nilai_sama(v, b.fields[k]) for b in sumber.values()) for k, v in klaim.nilai.items()
-        ):
-            gagal.append(VALID_TAPI_SALAH)
+    if not all(
+        any(k in b.fields and nilai_sama(v, b.fields[k]) for b in sumber.values()) for k, v in klaim.nilai.items()
+    ):
+        gagal.append(VALID_TAPI_SALAH)
 
     # 5: entitas di teks berdasar pada kode kartu atau bukti (bukti dirujuk; tanpa rujukan: semua bukti kartu).
     dasar = sumber if klaim.bukti else kartu.korpus_bukti
@@ -283,7 +286,8 @@ def _periksa_klaim(kartu: _Kartu, klaim: Klaim, bukti: Mapping[str, Bukti] | Non
     return HasilKlaim(klaim, tuple(gagal))
 
 
-def periksa(kode: Kode, narasi: Narasi, bukti: Mapping[str, Bukti] | None) -> list[HasilKlaim]:
-    """Periksa semua klaim. `bukti` None berarti bukti asli tidak dibaca (ingest belum dikonfigurasi)."""
+def periksa(kode: Kode, narasi: Narasi, bukti: Mapping[str, Bukti]) -> list[HasilKlaim]:
+    """Periksa semua klaim terhadap kode kartu dan bukti asli dari ingest. ID yang tidak dikembalikan ingest
+    tidak ada di `bukti`, sehingga klaim yang merujuknya gagal `ID_TIDAK_DITEMUKAN`."""
     kartu = _Kartu.dari(kode, bukti)
-    return [_periksa_klaim(kartu, k, bukti) for k in daftar_klaim(narasi)]
+    return [_periksa_klaim(kartu, k) for k in daftar_klaim(narasi)]

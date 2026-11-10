@@ -1,21 +1,36 @@
 from helpers import EV1, EV2, bukti_asli, klaim, kode, narasi
 
 from astria_verifier.checks import periksa
-from astria_verifier.policy import evidence_set_hash, putuskan
+from astria_verifier.policy import evidence_set_hash, perlu_ulang, permintaan_ulang, putuskan
 
 BAIK = "Akun svc-backup gagal logon ke WS-ADM-04."
 BURUK = "Insiden ini RENDAH."
 
 
-def _putuskan(ringkasan, **overrides):
+def _hasil(ringkasan, **overrides):
     n = narasi([klaim(t) for t in ringkasan], **overrides)
-    return putuskan(kode(), n, periksa(kode(), n, bukti_asli()))
+    return n, periksa(kode(), n, bukti_asli())
+
+
+def _putuskan(ringkasan, **overrides):
+    n, hasil = _hasil(ringkasan, **overrides)
+    return putuskan(kode(), n, hasil)
 
 
 def test_all_pass_is_lulus_with_full_model() -> None:
     kep = _putuskan([BAIK, BAIK])
     assert (kep.status, kep.klaim_total, kep.klaim_lolos, kep.ditolak) == ("LULUS", 3, 3, [])
     assert len(kep.model["ringkasan"]) == 2
+
+
+def test_only_failed_counted_claims_on_attempt_1_request_retry_with_codes_only() -> None:
+    _, hasil = _hasil([BAIK, BURUK])
+    assert perlu_ulang(hasil, 1) and not perlu_ulang(hasil, 2)
+    assert not perlu_ulang(_hasil([BAIK])[1], 1)
+    assert not perlu_ulang(_hasil([BAIK], belum_diketahui=["Host WS-XX-99 belum diperiksa."])[1], 1)
+    permintaan = permintaan_ulang(hasil)
+    assert permintaan.attempt == 2
+    assert permintaan.model_dump(mode="json")["kegagalan"] == [{"klaim_no": 1, "kode": "BERTENTANGAN_DENGAN_KODE"}]
 
 
 def test_at_least_seventy_percent_is_sebagian_and_failed_claims_are_dropped() -> None:
@@ -35,7 +50,7 @@ def test_below_threshold_or_empty_is_templat_without_model_text() -> None:
     kep = _putuskan([BURUK, BURUK])
     assert (kep.status, kep.model) == ("TEMPLAT", {})
     n = narasi([], hipotesis_utama={"teks": "Insiden ini RENDAH.", "bukti": [EV1]})
-    assert putuskan(kode(), n, periksa(kode(), n, None)).status == "TEMPLAT"
+    assert putuskan(kode(), n, periksa(kode(), n, bukti_asli())).status == "TEMPLAT"
 
 
 def test_failed_unknowns_are_dropped_but_not_counted() -> None:
